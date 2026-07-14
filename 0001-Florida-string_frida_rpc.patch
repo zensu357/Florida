@@ -1,0 +1,57 @@
+From 4df143cb54bb3a16b293b48e771a5b8ce905f29b Mon Sep 17 00:00:00 2001
+From: alberta davis <3194017853@qq.com>
+Date: Tue, 14 Jul 2026 12:36:27 +0800
+Subject: [PATCH] fix: update rpc patch for latest frida
+
+---
+ lib/base/rpc.vala | 13 ++++++++++---
+ 1 file changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/lib/base/rpc.vala b/lib/base/rpc.vala
+index 97edecf3..45b6bd1d 100644
+--- a/lib/base/rpc.vala
++++ b/lib/base/rpc.vala
+@@ -13,6 +13,13 @@ namespace Frida {
+ 
+ 		private Gee.HashMap<string, PendingResponse> pending_responses = new Gee.HashMap<string, PendingResponse> ();
+ 
++		private string getRpcStr (bool return_frida) {
++			if (return_frida) {
++				return "fri" + "da";
++			}
++			return "fri" + "da:rpc";
++		}
++
+ 		/**
+ 		 * Creates an RPC client that talks over @peer.
+ 		 *
+@@ -36,7 +43,7 @@ namespace Frida {
+ 			var request = new Json.Builder ();
+ 			request
+ 				.begin_array ()
+-				.add_string_value ("frida:rpc")
++				.add_string_value (getRpcStr (false))
+ 				.add_string_value (request_id)
+ 				.add_string_value ("call")
+ 				.add_string_value (method)
+@@ -96,7 +103,7 @@ namespace Frida {
+ 		 * @return true if the message was an RPC message and was handled
+ 		 */
+ 		public bool try_handle_message (string json) {
+-			if (json.index_of ("\"frida:rpc\"") == -1)
++			if (json.index_of (getRpcStr (true)) == -1)
+ 				return false;
+ 
+ 			var parser = new Json.Parser ();
+@@ -125,7 +132,7 @@ namespace Frida {
+ 				return false;
+ 
+ 			string? type = rpc_message.get_element (0).get_string ();
+-			if (type == null || type != "frida:rpc")
++			if (type == null || type != getRpcStr (false))
+ 				return false;
+ 
+ 			var request_id_value = rpc_message.get_element (1);
+-- 
+2.52.0.windows.1
+
