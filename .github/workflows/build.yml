@@ -1,17 +1,21 @@
-name: Florida-Custom-Build
+name: Florida-Smart-Build
 
 on:
-  workflow_dispatch: # 支持你在 GitHub 网页上手动一键触发编译
+  workflow_dispatch:
+    inputs:
+      frida_version:
+        description: '想要编译的 Frida 版本号 (例如: 17.15.4 或 17.14.0)'
+        required: true
+        default: '17.15.4'  # 如果 17.15.5 补丁冲突，你可以先试试 17.15.4 
   push:
     branches: ["main", "ci"]
     paths:
       - ".github/workflows/build.yml"
       - "patches/**"
 
-# 定义全局变量，方便你以后修改版本和架构
 env:
-  TARGET_FRIDA_VERSION: "16.2.1"  # 在这里指定你想要编译的兼容 Frida 版本
-  BUILD_ARCH: "android-arm64"      # 仅保留你手机需要的 64 位架构，极大缩短构建时间
+  DEFAULT_VERSION: "17.15.4" # 触发 push 时的默认保底版本
+  BUILD_ARCH: "android-arm64" 
 
 jobs: 
   check_version:
@@ -23,7 +27,13 @@ jobs:
       - name: Set Custom Frida Version
         id: set_version
         run: |
-          echo "FRIDA_VERSION=${{ env.TARGET_FRIDA_VERSION }}" >> $GITHUB_OUTPUT
+          # 优先使用网页手动输入的版本，其次使用 push 默认版本
+          INPUT_VER="${{ github.event.inputs.frida_version }}"
+          if [ -z "$INPUT_VER" ]; then
+            INPUT_VER="${{ env.DEFAULT_VERSION }}"
+          fi
+          echo "FRIDA_VERSION=${INPUT_VER}" >> $GITHUB_OUTPUT
+          echo "Selected Frida Version: ${INPUT_VER}"
 
       - name: Split Repository Name
         id: split_name
@@ -40,39 +50,30 @@ jobs:
           github-token: ${{secrets.GITHUB_TOKEN}}
           script: |
             try {
-              const releaseVersion = '${{ env.TARGET_FRIDA_VERSION }}'
+              const releaseVersion = '${{ steps.set_version.outputs.FRIDA_VERSION }}'
               const releaseResponse = await github.rest.repos.getReleaseByTag({
                 owner: '${{ steps.split_name.outputs.owner }}',
                 repo: '${{ steps.split_name.outputs.repo }}',
                 tag: releaseVersion
               });
-              const {
-                data: { tag_name: ver }
-              } = releaseResponse;
-              if (ver == '${{ env.TARGET_FRIDA_VERSION }}'){
+              if (releaseResponse.data.tag_name == releaseVersion){
                 if (${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}){
                   core.setOutput('ALREADY_RELEASE', '2');
                 } else {
                   core.setOutput('ALREADY_RELEASE', '1');
                 }
-              }
-              else{
+              } else {
                 core.setOutput('ALREADY_RELEASE', '0');
               }
             } catch (e) {
-              if(e.message == 'Not Found'){
-                core.setOutput('ALREADY_RELEASE', '0');
-              }
-              else{
-                core.setFailed(e.message);
-              }
+              core.setOutput('ALREADY_RELEASE', '0');
             }
       
       - name: Delete old release
         if: ${{ steps.checkReleaseVersion.outputs.ALREADY_RELEASE == '2' }}
         uses: dev-drprasad/delete-tag-and-release@v1.0.1
         with:
-          tag_name: ${{ env.TARGET_FRIDA_VERSION }}
+          tag_name: ${{ steps.set_version.outputs.FRIDA_VERSION }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           delete_release: true
 
@@ -133,14 +134,13 @@ jobs:
         git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
         
         export ANDROID_NDK_ROOT=${{ steps.setup-ndk.outputs.ndk-path }}
-        echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
         
-        # 1. 深度克隆指定版本的 Frida 并自动初始化子模块（防止补丁版本冲突）
-        git clone --branch ${{ env.TARGET_FRIDA_VERSION }} --depth 1 https://github.com/frida/frida
+        # 克隆网页指定输入或默认的较新版本号
+        git clone --branch ${{ needs.check_version.outputs.FRIDA_VERSION }} --depth 1 https://github.com/frida/frida
         cd frida
         git submodule update --init --recursive --depth 1
         
-        # 2. 依次打入项目中预设的补丁
+        # 打补丁
         for path in ../patches/*
         do
           name=$(basename $path)
@@ -152,7 +152,7 @@ jobs:
         done
         cd ..
         
-        # 3. 仅编译自定义架构（如 android-arm64）
+        # 编译 arm64
         ARCHES="${{ env.BUILD_ARCH }}"
         for ARCH in $ARCHES
         do
@@ -162,43 +162,10 @@ jobs:
           make
           cd ..
         done
-    
-    - name: Split Repository Name
-      id: split_name
-      run: |
-        repo_name=${{ github.repository }}
-        IFS='/' read -ra repo_parts <<< "$repo_name"
-        echo "owner=${repo_parts[0]}" >> $GITHUB_OUTPUT
-        echo "repo=${repo_parts[1]}" >> $GITHUB_OUTPUT
-
-    - name: Check release version
-      id: checkReleaseVersion
-      uses: actions/github-script@v7
-      with:
-        github-token: ${{secrets.GITHUB_TOKEN}}
-        script: |
-          try {
-            const releaseVersion = '${{ needs.check_version.outputs.FRIDA_VERSION }}'
-            const releaseResponse = await github.rest.repos.getReleaseByTag({
-              owner: '${{ steps.split_name.outputs.owner }}',
-              repo: '${{ steps.split_name.outputs.repo }}',
-              tag: releaseVersion
-            })
-            const {
-              data: { id: releaseId, html_url: htmlUrl, upload_url: uploadUrl }
-            } = releaseResponse;
-            core.setOutput('id', releaseId);
-            core.setOutput('html_url', htmlUrl);
-            core.setOutput('upload_url', uploadUrl);
-            core.setOutput('version', releaseVersion);
-          } catch (e) {
-            core.setFailed(e.message);
-          }
 
     - name: package build result for Android
       shell: bash
       run: |
-        # 仅对打包了的 arm64 目标进行压缩
         gzip build-android-arm64/subprojects/frida-core/server/frida-server
         gzip build-android-arm64/subprojects/frida-core/inject/frida-inject
         gzip build-android-arm64/subprojects/frida-core/lib/gadget/frida-gadget.so
